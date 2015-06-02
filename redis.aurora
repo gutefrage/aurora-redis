@@ -1,0 +1,71 @@
+####################
+##
+## Aurora Config for HA redis 
+##
+###################
+#
+copy = Process(
+  name = 'CopyFromHDFS',
+  cmdline = """ 
+	/usr/bin/hadoop fs -copyToLocal hdfs://hdfscluster/path/to/redis/redis-server . && chmod a+x redis-server
+	/usr/bin/hadoop fs -copyToLocal hdfs://hdfscluster/path/to/redis/redis_elector.py . && chmod a+x redis_elector.py
+	"""
+)
+
+run = Process(
+  name = 'RunRedis',
+  cmdline = """ 
+	while [ ! -e "running" ]; do sleep 1; done 
+	if [ -e "isMaster" ] 
+	then 
+		 /usr/bin/hadoop fs -copyToLocal hdfs://hdfscluster/path/to/redis/dump.rdb .
+	fi
+	touch redisRunning
+	./redis-server --port {{thermos.ports[redis]}} 
+	"""
+)
+
+election = Process(
+  name = "Election",
+  cmdline = """ 
+	export redis_host=$(ifconfig bond0 |  grep "inet addr" | awk -F: '{print $2}' | awk '{print $1}')
+	export redis_port={{thermos.ports[redis]}} 
+	./redis_elector.py 
+	"""
+)
+
+backup = Process(
+  name = 'Backup',
+  cmdline = """ 
+	lastBackup=$(date +%s)
+	while true
+	do
+		if [ -e "isMaster" ] && [ -e "dump.rdb" ]
+		then 
+			filemtime=$(stat -c %Y dump.rdb)
+			if [ "$filemtime" -gt "$lastBackup" ]
+			then
+				/usr/bin/hadoop fs -put -f dump.rdb hdfs://hdfscluster/path/to/redis/
+				lastBackup=$filemtime
+				echo "Saved Backup"
+			fi
+		fi
+		sleep 10;	
+	done 
+	"""
+)
+
+
+task = Task(
+  processes = [copy,run,backup,election],
+  constraints = [Constraint(order = [copy.name(), run.name()]), Constraint(order = [copy.name(), backup.name()]), Constraint(order = [copy.name(), election.name()])],
+  resources = Resources(cpu = 0.005, ram = 1024*MB, disk = 512*MB))
+
+updateconfig = UpdateConfig(batch_size=3)
+
+announce = Announcer(primary_port='redis')
+
+jobs = [
+  Service(announce = announce, task = task, update_config=updateconfig, cluster = 'prodcluster', role = 'tools', environment = 'prod'    , name = "redis", instances = 5, constraints = { }),
+]
+
