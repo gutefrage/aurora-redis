@@ -9,6 +9,7 @@ from time import sleep
 import os
 import sys
 import signal
+import datetime
 
 import redis
 from kazoo.client import KazooClient
@@ -27,6 +28,10 @@ zk_base = os.getenv('zk_base', "/redis")
 zk_hosts = os.getenv('zk_hosts', "zookeeper:2181")
 zk_path_to_master = zk_base + "/master"
 
+def logger(msg):
+    print datetime.datetime.now() + ": " + msg
+    sys.stdout.flush()
+
 def signal_handler(signal, frame):
     global zk_connection
     print('Processing signal. Shutting down...')
@@ -40,14 +45,12 @@ def zookeeper_listener(state):
 
     if state == KazooState.LOST or state == KazooState.SUSPENDED:
         # Register somewhere that the session was lost or being disconnected from Zookeeper
-        print "Connection lost, retrying in %d seconds" % reconnect_time
-        sys.stdout.flush()
+        logger("Connection lost, retrying in %d seconds" % reconnect_time)
         sleep(reconnect_time)
 
     else:
         # Handle being connected/reconnected to Zookeeper
-        print "Reconnected to Zookeeper!"
-        sys.stdout.flush()
+        logger("Reconnected to Zookeeper!")
         reconnected = True
 
 
@@ -61,8 +64,7 @@ def zookeeper_watcher(zk_connection):
                 # At this point make sure that the flag file really exists
                 touch("running")
 
-                print "Unsetting possible slave config"
-                sys.stdout.flush()
+                logger("Unsetting possible slave config")
                 set_redis_slave(None, None)
 
             else:
@@ -70,12 +72,11 @@ def zookeeper_watcher(zk_connection):
                 redis_address_parts = data.split(':')
 
                 if os.path.exists("isMaster"):
-                    print "Master flag file found, deleting..."
+                    logger("Master flag file found, deleting...")
                     os.remove("isMaster")
 
-                print "Set Master to %s on port %s " % (redis_address_parts[0], redis_address_parts[1])
+                logger("Set Master to %s on port %s " % (redis_address_parts[0], redis_address_parts[1]))
                 set_redis_slave(redis_address_parts[0], redis_address_parts[1])
-                sys.stdout.flush()
 
 
 
@@ -100,8 +101,7 @@ def set_redis_master():
     global master
     master = True
 
-    print "I am taking the crown! (Elected master...) "
-    sys.stdout.flush()
+    logger("I am taking the crown! (Elected master...) ")
     zk_connection.ensure_path(zk_base)
 
     # Should never be necessary, just to be sure.
@@ -131,8 +131,7 @@ def set_redis_slave(tHost, tPort):
         except redis.ConnectionError:
             if timeout <= 0:
                 raise OSError, "Timeout reached. Couldn't connect to Redis."
-            print "Can't connect to Redis. Sleeping for %d seconds..." % retry_time
-            sys.stdout.flush()
+            logger("Can't connect to Redis. Sleeping for %d seconds..." % retry_time)
             timeout += retry_time
             sleep(retry_time)
 
@@ -144,8 +143,7 @@ def touch(fname, times=None):
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
-print "Redis %s %s" % (redis_host, redis_port)
-sys.stdout.flush()
+logger("Redis %s %s" % (redis_host, redis_port))
 redis_connection = redis.StrictRedis(host=redis_host, port=redis_port, db=0)
 
 zk_connection = KazooClient(hosts=zk_hosts)
